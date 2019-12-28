@@ -30,13 +30,12 @@ def img_inference(x_in, args):
     #            np.int(offset[1] * args.rand_box_ratio):(np.int(offset[1] * args.rand_box_ratio) + args.rand_box_hm_size)]
     return rand_crop
 
-def img_preprocessing(x_in, y_in, args):
+def img_preprocessing(x_in, args):
     # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
     rand_crop, offset, size = random_crop(x_in, args.rand_box)
     # rand_crop = tf.minimum(tf.nn.relu(rand_crop + tf.random.uniform(rand_crop.shape, -0.5, 0.5)), 255)/128.0 - 1  ## dequantize
     # heat_map = xy_in[1][np.int(offset[0] * args.rand_box_ratio):(np.int(offset[0] * args.rand_box_ratio) + args.rand_box_hm_size),
     #            np.int(offset[1] * args.rand_box_ratio):(np.int(offset[1] * args.rand_box_ratio) + args.rand_box_hm_size)]
-    heat_map = array_ops.slice(ops.convert_to_tensor(y_in, name="value"), tf.cast(tf.cast(offset[:2], tf.float32) * args.rand_box_ratio,tf.int32), args.rand_box_hm)
     return rand_crop, tf.squeeze(tf.matmul(tf.reshape(rand_crop, [1,-1]), args.vh))
 
 def img_load(filename, args):
@@ -66,26 +65,19 @@ def load_dataset(args):
     args.rand_box = np.array([args.rand_box_size, args.rand_box_size, 3])
     args.n_dims = np.prod(args.rand_box)
 
-    train_heatmap = np.load(r'D:\Papers\GQC_images\heatmaps\train_normalized_heatmaps.npy').astype(np.float32)
-    test_heatmap = np.load(r'D:\Papers\GQC_images\heatmaps\test_normalized_heatmaps.npy').astype(np.float32)
-
-    args.rand_box_hm_size = np.int(train_heatmap[0].shape[0] * args.rand_box_init)
-    args.rand_box_hm = np.array([args.rand_box_hm_size, args.rand_box_hm_size])
-    args.rand_box_ratio = args.rand_box_hm_size/args.rand_box_size
-
     img_preprocessing_ = functools.partial(img_preprocessing, args=args)
 
-    dataset_train = tf.data.Dataset.from_tensor_slices((train_data.astype(np.float32), train_heatmap))  # .float().to(args.device)
+    dataset_train = tf.data.Dataset.from_tensor_slices(train_data.astype(np.float32))  # .float().to(args.device)
     dataset_train = dataset_train.shuffle(buffer_size=len(train_data)).map(img_preprocessing_,
         num_parallel_calls=args.parallel).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
     # dataset_train = dataset_train.shuffle(buffer_size=len(train)).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_valid = tf.data.Dataset.from_tensor_slices((train_data.astype(np.float32), train_heatmap))  # .float().to(args.device)
+    dataset_valid = tf.data.Dataset.from_tensor_slices(train_data.astype(np.float32))  # .float().to(args.device)
     dataset_valid = dataset_valid.map(img_preprocessing_, num_parallel_calls=args.parallel).batch(
         batch_size=args.batch_dim * 2).prefetch(buffer_size=args.prefetch_size)
     # dataset_valid = dataset_valid.batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_test = tf.data.Dataset.from_tensor_slices((test_data.astype(np.float32), test_heatmap))  # .float().to(args.device)
+    dataset_test = tf.data.Dataset.from_tensor_slices(test_data.astype(np.float32))  # .float().to(args.device)
     dataset_test = dataset_test.map(img_preprocessing_, num_parallel_calls=args.parallel).batch(
         batch_size=args.batch_dim * 2).prefetch(buffer_size=args.prefetch_size)
 
@@ -121,21 +113,12 @@ def create_model(args):
 
     x = layers.Flatten()(x)
     x = layers.Dense(6, activation=actfun)(x)
-    quality = layers.Dense(1, activation=tf.nn.sigmoid)(x)
+    quality = layers.Dense(1)(x)
     model = tf.keras.Model(inputs, quality, name='toy_resnet')
     model.summary()
 
     return model
 
-
-def load_target_model(args, root, load_start_epoch=False):
-    # def f():
-    print('Loading model..')
-    root.restore(tf.train.latest_checkpoint(args.load or args.path))
-    # root.restore(os.path.join(args.load or args.path, 'checkpoint'))
-    # if load_start_epoch:
-    #     args.start_epoch = tf.train.get_global_step().numpy()
-    # return f
 
 def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_loader_test, args, target_model):
     epoch = args.start_epoch
@@ -144,7 +127,7 @@ def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_
         for x_mb, y_mb in data_loader_train:
             with tf.GradientTape(watch_accessed_variables=False) as tape:
                 tape.watch(model.trainable_variables)
-                loss = tf.reduce_mean(tf.math.squared_difference(target_model(y_mb), model(x_mb, training=True)))
+                loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb), model(x_mb, training=True)))
             grads = tape.gradient(loss, model.trainable_variables)
             grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
             globalstep = optimizer.apply_gradients(zip(grads, model.trainable_variables))
@@ -155,14 +138,14 @@ def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_
 
         validation_loss = []
         for x_mb, y_mb in data_loader_val:
-            loss = tf.reduce_mean(tf.math.squared_difference(target_model(y_mb), model(x_mb, training=False))).numpy()
+            loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb), model(x_mb, training=False))).numpy()
             validation_loss.append(loss)
         validation_loss = tf.reduce_mean(validation_loss)
         # print("validation loss:  " + str(validation_loss))
 
         test_loss=[]
         for x_mb, y_mb in data_loader_test:
-            loss = tf.reduce_mean(tf.math.squared_difference(target_model(y_mb), model(x_mb, training=False))).numpy()
+            loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb), model(x_mb, training=False))).numpy()
             test_loss.append(loss)
         test_loss = tf.reduce_mean(test_loss)
 

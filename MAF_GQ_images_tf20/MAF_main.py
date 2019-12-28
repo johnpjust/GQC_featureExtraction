@@ -8,7 +8,7 @@ from munch import munchify
 
 tf.random.set_seed(None)
 
-def load_target_model(path):
+def load_target_model(path, act_fun = tf.nn.relu):
     # path = r'D:\pycharm_projects\GQC_images_tensorboard\MAF_layers5_h[100]_vhTrue_resize0.25_boxsize0.25_2019-12-27-15-11-42'
     ## set all "args" with json file data
     data = []
@@ -27,6 +27,7 @@ def load_target_model(path):
 
             data[key] = ''
     args = munchify(data)
+    args.act = act_fun ## set manually -- above code doesn't parse function type well
     model = mafs.MaskedAutoregressiveFlow(args.n_dims, args.num_hidden, args.act, args.num_layers, batch_norm=True, args=args)
 
     model_parms = np.load(os.path.join(path,'model_parms.npy'), allow_pickle=True)
