@@ -20,14 +20,21 @@ import functools
 
 tf.random.set_seed(None)
 
-
-def img_preprocessing(xy_in, args):
+def img_inference(x_in, args):
     # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
-    rand_crop, offset, size = random_crop(xy_in[0], args.rand_box)
+    rand_crop, offset, size = random_crop(x_in, args.rand_box)
     # rand_crop = tf.minimum(tf.nn.relu(rand_crop + tf.random.uniform(rand_crop.shape, -0.5, 0.5)), 255)/128.0 - 1  ## dequantize
     # heat_map = xy_in[1][np.int(offset[0] * args.rand_box_ratio):(np.int(offset[0] * args.rand_box_ratio) + args.rand_box_hm_size),
     #            np.int(offset[1] * args.rand_box_ratio):(np.int(offset[1] * args.rand_box_ratio) + args.rand_box_hm_size)]
-    heat_map = array_ops.slice(ops.convert_to_tensor(xy_in[1], name="value"), (offset[:2] * args.rand_box_ratio).astype(np.int), args.rand_box_hm)
+    return rand_crop
+
+def img_preprocessing(x_in, y_in, args):
+    # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
+    rand_crop, offset, size = random_crop(x_in, args.rand_box)
+    # rand_crop = tf.minimum(tf.nn.relu(rand_crop + tf.random.uniform(rand_crop.shape, -0.5, 0.5)), 255)/128.0 - 1  ## dequantize
+    # heat_map = xy_in[1][np.int(offset[0] * args.rand_box_ratio):(np.int(offset[0] * args.rand_box_ratio) + args.rand_box_hm_size),
+    #            np.int(offset[1] * args.rand_box_ratio):(np.int(offset[1] * args.rand_box_ratio) + args.rand_box_hm_size)]
+    heat_map = array_ops.slice(ops.convert_to_tensor(y_in, name="value"), tf.cast(tf.cast(offset[:2], tf.float32) * args.rand_box_ratio,tf.int32), args.rand_box_hm)
     return rand_crop, heat_map
 
 def img_load(filename, args):
@@ -43,23 +50,22 @@ def img_load(filename, args):
     imgcre = tf.image.resize(imgc, size=imresize_)
     return imgcre
 
-
 def load_dataset(args):
     tf.random.set_seed(args.manualSeed)
     np.random.seed(args.manualSeed)
     random.seed(args.manualSeed)
 
-    trainval = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
-    train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in trainval])
+    train_data = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
+    train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in train_data])/255.0
     test_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
-    test_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in test_data])
+    test_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in test_data])/255.0
 
     args.rand_box_size = np.int(train_data[0].shape[0] * args.rand_box_init)
     args.rand_box = np.array([args.rand_box_size, args.rand_box_size, 3])
     args.n_dims = np.prod(args.rand_box)
 
-    train_heatmap = np.load(r'D:\Papers\GQC_images\heatmaps\train_normalized_heatmaps.npy')
-    test_heatmap = np.load(r'D:\Papers\GQC_images\heatmaps\test_normalized_heatmaps.npy')
+    train_heatmap = np.load(r'D:\Papers\GQC_images\heatmaps\train_normalized_heatmaps.npy').astype(np.float32)
+    test_heatmap = np.load(r'D:\Papers\GQC_images\heatmaps\test_normalized_heatmaps.npy').astype(np.float32)
 
     args.rand_box_hm_size = np.int(train_heatmap[0].shape[0] * args.rand_box_init)
     args.rand_box_hm = np.array([args.rand_box_hm_size, args.rand_box_hm_size])
@@ -67,17 +73,17 @@ def load_dataset(args):
 
     img_preprocessing_ = functools.partial(img_preprocessing, args=args)
 
-    dataset_train = tf.data.Dataset.from_tensor_slices((train_data, train_heatmap))  # .float().to(args.device)
+    dataset_train = tf.data.Dataset.from_tensor_slices((train_data.astype(np.float32), train_heatmap))  # .float().to(args.device)
     dataset_train = dataset_train.shuffle(buffer_size=len(train_data)).map(img_preprocessing_,
         num_parallel_calls=args.parallel).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
     # dataset_train = dataset_train.shuffle(buffer_size=len(train)).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_valid = tf.data.Dataset.from_tensor_slices((train_data, train_heatmap))  # .float().to(args.device)
+    dataset_valid = tf.data.Dataset.from_tensor_slices((train_data.astype(np.float32), train_heatmap))  # .float().to(args.device)
     dataset_valid = dataset_valid.map(img_preprocessing_, num_parallel_calls=args.parallel).batch(
         batch_size=args.batch_dim * 2).prefetch(buffer_size=args.prefetch_size)
     # dataset_valid = dataset_valid.batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_test = tf.data.Dataset.from_tensor_slices((test_data, test_heatmap))  # .float().to(args.device)
+    dataset_test = tf.data.Dataset.from_tensor_slices((test_data.astype(np.float32), test_heatmap))  # .float().to(args.device)
     dataset_test = dataset_test.map(img_preprocessing_, num_parallel_calls=args.parallel).batch(
         batch_size=args.batch_dim * 2).prefetch(buffer_size=args.prefetch_size)
 
@@ -91,51 +97,171 @@ def create_model(args):
     tf.random.set_seed(args.manualSeedw)
     np.random.seed(args.manualSeedw)
 
-    encoder_input = Input(shape=(28, 28, 1), name='img')
-    x = layers.Conv2D(16, 3, activation='relu')(encoder_input)
-    x = layers.Conv2D(32, 3, activation='relu')(x)
-    x = layers.MaxPooling2D(3)(x)
-    x = layers.Conv2D(32, 3, activation='relu')(x)
-    x = layers.Conv2D(16, 3, activation='relu')(x)
-    encoder_output = layers.GlobalMaxPooling2D()(x)
+    ############## example autoencoder #####################
+    # encoder_input = Input(shape=args.rand_box, name='img')
+    # x = layers.Conv2D(16, 3, activation='relu')(encoder_input)
+    # x = layers.Conv2D(32, 3, activation='relu')(x)
+    # x = layers.MaxPooling2D(3)(x)
+    # x = layers.Conv2D(32, 3, activation='relu')(x)
+    # x = layers.Conv2D(16, 3, activation='relu')(x)
+    # encoder_output = layers.GlobalMaxPooling2D()(x)
+    #
+    # encoder = Model(encoder_input, encoder_output, name='encoder')
+    #
+    # x = layers.Reshape((4, 4, 1))(encoder_output)
+    # x = layers.Conv2DTranspose(16, 3, activation='relu')(x)
+    # x = layers.Conv2DTranspose(32, 3, activation='relu')(x)
+    # x = layers.UpSampling2D(3)(x)
+    # x = layers.Conv2DTranspose(16, 3, activation='relu')(x)
+    # decoder_output = layers.Conv2DTranspose(3, 3, activation='relu')(x)
+    #
+    # autoencoder = Model(encoder_input, decoder_output, name='autoencoder')
+
+    # ######################## resnet autoencoder ############################
+    # actfun = tf.nn.relu
+    # encoder_input = tf.keras.Input(shape=args.rand_box, name='img')  ## (28, 28, 3) @ 25%/25%
+    # x = layers.Conv2D(32, 7, activation=actfun, strides=2)(encoder_input)
+    # block_output = layers.AveragePooling2D(3, strides=2)(x)
+    #
+    # x = layers.Conv2D(32, 1, activation=actfun, padding='same')(block_output)
+    # x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
+    # x = layers.add([x, block_output])
+    # x = layers.Conv2D(16, 1, activation=actfun)(x)
+    # # x = layers.Conv2D(16, 1, activation=actfun)(x)
+    # # block_output = layers.AveragePooling2D(pool_size=2, strides=2)(x)
+    # #
+    # # x = layers.Conv2D(32, 1, activation=actfun, padding='same')(block_output)
+    # # x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
+    # # x = layers.add([x, block_output])
+    # # x = layers.Conv2D(32, 1, activation=actfun)(x)
+    # # x = layers.AveragePooling2D(2, strides=2)
+    # #
+    # # x = layers.Conv2D(32, 1, activation=actfun)(block_output)
+    # # x = layers.Conv2D(32, 3, activation=None)(x)
+    # encoder_output = layers.GlobalAveragePooling2D()(x)
+    #
+    # encoder = Model(encoder_input, encoder_output, name='encoder')
+    #
+    # # x = layers.Reshape((2, 2, 1))(encoder_output)
+    # # x = layers.Conv2DTranspose(32, 5, activation=actfun, padding='valid')(x)
+    # # x = layers.Conv2DTranspose(32, 5, activation=actfun, padding='valid')(x)
+    # x = layers.Reshape((4, 4, 1))(encoder_output)
+    # x = layers.Conv2DTranspose(32, 7, activation=actfun, padding='valid')(x)
+    # block_output = layers.Conv2DTranspose(32, 3, activation=None, padding='valid')(x)
+    # x = layers.Conv2DTranspose(32, 1, activation=actfun, padding='same')(block_output)
+    # x = layers.Conv2DTranspose(32, 3, activation=None, padding='same')(x)
+    # x = layers.add([x, block_output])
+    #
+    # block_output = x = layers.UpSampling2D(2)(x)
+    # x = layers.Conv2DTranspose(32, 1, activation=actfun, padding='same')(block_output)
+    # x = layers.Conv2DTranspose(32, 3, activation=None, padding='same')(x)
+    # x = layers.add([x, block_output])
+    #
+    # x = layers.Conv2DTranspose(32, 5, activation=actfun, padding='valid')(x)
+    # # x = layers.UpSampling2D(3)(x)
+    # decoder_output = tf.squeeze(layers.Conv2DTranspose(3, 3, padding='same', activation=None)(x))
+    # # decoder_output = layers.Conv2DTranspose(1, 3,padding='same', activation=actfun)(x)
+    # # x = layers.Conv2DTranspose(16, 3, activation=actfun)(x)
+    # # x = layers.Conv2DTranspose(32, 3, activation=actfun)(x)
+    # # x = layers.UpSampling2D(3)(x)
+    # # x = layers.Conv2DTranspose(16, 3, activation=actfun)(x)
+    # # decoder_output = layers.Conv2DTranspose(3, 3, activation=actfun)(x)
+    #
+    # autoencoder = Model(encoder_input, decoder_output, name='autoencoder')
+
+    ######################## dense autoencoder ############################
+    actfun = tf.nn.elu
+    encoder_input = tf.keras.Input(shape=args.rand_box, name='img')  ## (28, 28, 3) @ 25%/25%
+    x = layers.Flatten()(encoder_input)
+    x = layers.Dense(512, activation=actfun)(x)
+    x = layers.Dense(128, activation=actfun)(x)
+    encoder_output = layers.Dense(64, activation=None)(x)
 
     encoder = Model(encoder_input, encoder_output, name='encoder')
 
-    x = layers.Reshape((4, 4, 1))(encoder_output)
-    x = layers.Conv2DTranspose(16, 3, activation='relu')(x)
-    x = layers.Conv2DTranspose(32, 3, activation='relu')(x)
-    x = layers.UpSampling2D(3)(x)
-    x = layers.Conv2DTranspose(16, 3, activation='relu')(x)
-    decoder_output = layers.Conv2DTranspose(1, 3, activation='relu')(x)
+    x = layers.Dense(128, activation=actfun)(encoder_output)
+    x = layers.Dense(512, activation=actfun)(x)
+    decoder_output = tf.reshape(layers.Dense(28*28*3, activation=None)(x), shape=(-1,28,28,3))
 
     autoencoder = Model(encoder_input, decoder_output, name='autoencoder')
 
+    ######################## convolutional autoencoder ##########################
+
+    # encoder_input = tf.keras.Input(shape=(28,28,3), name='img')
+    # # Encoder Layers
+    # x = layers.Conv2D(32, 3, activation='relu', padding='same')(encoder_input)
+    # x = layers.MaxPooling2D(2, padding='same')(x)
+    # x = layers.Conv2D(32, 3, activation='relu', padding='same')(x)
+    # x = layers.MaxPooling2D(2, padding='same')(x)
+    # x = layers.Conv2D(16, 3, strides=2, activation='relu', padding='same')(x)
+    #
+    # # Flatten encoding for visualization
+    # encoder_output = layers.GlobalMaxPooling2D()(x)
+    # encoder = Model(encoder_input, encoder_output, name='encoder')
+    #
+    # # Decoder Layers
+    # x = layers.Reshape((4, 4, 1))(encoder_output)
+    # x = layers.Conv2D(32, 3, activation='relu', padding='same')(x)
+    # x = layers.UpSampling2D(2)(x)
+    # x = layers.Conv2D(32, 3, activation='relu', padding='same')(x)
+    # x = layers.UpSampling2D(2)(x)
+    # x = layers.Conv2D(32, 3, activation='relu')(x)
+    # x = layers.UpSampling2D(2)(x)
+    # decoder_output = layers.Conv2D(3, 3, activation='sigmoid', padding='same')(x)
+    # autoencoder = Model(encoder_input, decoder_output, name='autoencoder')
+
+    # autoencoder.summary()
+
+    ######################### feature extractor autoencoder ################################
+    # actfun = tf.nn.relu
+    # encoder_input = tf.keras.Input(shape=args.rand_box, name='img') ## (28, 28, 3) @ 25%/25%
+    # x = layers.Conv2D(32, 7, activation=actfun, strides=2)(encoder_input)
+    # block_output = layers.AveragePooling2D(3, strides=2)(x)
+    #
+    # x = layers.Conv2D(32, 1, activation=actfun, padding='same')(block_output)
+    # x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
+    # x = layers.add([x, block_output])
+    # x = layers.Conv2D(4, 1, activation=actfun)(x)
+    # # x = layers.Conv2D(16, 1, activation=actfun)(x)
+    # # block_output = layers.AveragePooling2D(pool_size=2, strides=2)(x)
+    # #
+    # # x = layers.Conv2D(32, 1, activation=actfun, padding='same')(block_output)
+    # # x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
+    # # x = layers.add([x, block_output])
+    # # x = layers.Conv2D(32, 1, activation=actfun)(x)
+    # # x = layers.AveragePooling2D(2, strides=2)
+    # #
+    # # x = layers.Conv2D(32, 1, activation=actfun)(block_output)
+    # # x = layers.Conv2D(32, 3, activation=None)(x)
+    # encoder_output = layers.GlobalAveragePooling2D()(x)
+    #
+    # encoder = Model(encoder_input, encoder_output, name='encoder')
+    #
+    # x = layers.Reshape((2, 2, 1))(encoder_output)
+    # x = layers.Conv2DTranspose(32, 5, activation=actfun, padding='valid')(x)
+    # x = layers.Conv2DTranspose(32, 5, activation=actfun, padding='valid')(x)
+    # # x = layers.Reshape((4, 4, 1))(encoder_output)
+    # x = layers.Conv2DTranspose(32, 7, activation=actfun, padding='valid')(x)
+    # block_output = layers.Conv2DTranspose(32, 3, activation=None, padding='valid')(x)
+    # x = layers.Conv2DTranspose(32, 1, activation=actfun, padding='same')(block_output)
+    # x = layers.Conv2DTranspose(32, 3, activation=None, padding='same')(x)
+    # x = layers.add([x, block_output])
+    # # x = layers.UpSampling2D(3)(x)
+    # decoder_output = tf.squeeze(layers.Conv2DTranspose(1, 3,padding='same', activation=tf.nn.sigmoid)(x))
+    # # decoder_output = tf.squeeze(layers.Conv2DTranspose(1, 3,padding='same', activation=actfun)(x))
+    # # x = layers.Conv2DTranspose(16, 3, activation=actfun)(x)
+    # # x = layers.Conv2DTranspose(32, 3, activation=actfun)(x)
+    # # x = layers.UpSampling2D(3)(x)
+    # # x = layers.Conv2DTranspose(16, 3, activation=actfun)(x)
+    # # decoder_output = layers.Conv2DTranspose(3, 3, activation=actfun)(x)
+    #
+    # autoencoder = Model(encoder_input, decoder_output, name='autoencoder')
+
+    # x = layers.Flatten()(x)
+    # x = layers.Dense(4, activation=actfun)(x)
 
     encoder.summary()
     autoencoder.summary()
-
-    # inputs = tf.keras.Input(shape=(108, 192, 3*args.num_frames), name='img') ## (108, 192, 3)
-    # x = layers.Conv2D(32, 7, activation=actfun, strides=2)(inputs)
-    # block_output = layers.MaxPooling2D(3, strides=2)(x)
-    #
-    # x = layers.Conv2D(32, 1, activation=actfun, padding='same')(block_output)
-    # x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
-    # x = layers.add([x, block_output])
-    # x = layers.Conv2D(32, 1, activation=actfun)(x)
-    # block_output = layers.AveragePooling2D(pool_size=2, strides=2)(x)
-    #
-    # x = layers.Conv2D(32, 1, activation=actfun, padding='same')(block_output)
-    # x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
-    # x = layers.add([x, block_output])
-    # x = layers.Conv2D(32, 1, activation=actfun)(x)
-    # x = layers.AveragePooling2D(2, strides=2)
-    #
-    # x = layers.Conv2D(32, 1, activation=actfun)(block_output)
-    # x = layers.Conv2D(32, 3, activation=None)(x)
-    # x = layers.GlobalAveragePooling2D()(x)
-    #
-    # x = layers.Flatten()(x)
-    # x = layers.Dense(4, activation=actfun)(x)
 
     return autoencoder, encoder
 
@@ -156,7 +282,9 @@ def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_
 
         for x_mb, y_mb in data_loader_train:
             with tf.GradientTape() as tape:
-                loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(y_mb, model(x_mb, training=True)))
+                # loss = tf.reduce_mean(tf.math.squared_difference(y_mb, model(x_mb, training=True)))
+                # loss = tf.reduce_mean(tf.abs(tf.math.subtract(x_mb, model(x_mb, training=True))))
+                loss = tf.reduce_mean(tf.math.squared_difference(x_mb, model(x_mb, training=True)))
             grads = tape.gradient(loss, model.trainable_variables)
             grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
             globalstep = optimizer.apply_gradients(zip(grads, model.trainable_variables))
@@ -167,14 +295,18 @@ def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_
 
         validation_loss = []
         for x_mb, y_mb in data_loader_val:
-            loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(y_mb, model(x_mb, training=False))).numpy()
+            # loss = tf.reduce_mean(tf.math.squared_difference(y_mb, model(x_mb, training=False))).numpy()
+            # loss = tf.reduce_mean(tf.abs(tf.math.subtract(x_mb, model(x_mb, training=False)))).numpy()
+            loss = tf.reduce_mean(tf.math.squared_difference(x_mb, model(x_mb, training=False))).numpy()
             validation_loss.append(loss)
         validation_loss = tf.reduce_mean(validation_loss)
         # print("validation loss:  " + str(validation_loss))
 
         test_loss=[]
         for x_mb, y_mb in data_loader_test:
-            loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(y_mb, model(x_mb, training=False))).numpy()
+            # loss = tf.reduce_mean(tf.math.squared_difference(y_mb, model(x_mb, training=False))).numpy()
+            # loss = tf.reduce_mean(tf.abs(tf.math.subtract(x_mb, model(x_mb, training=False)))).numpy()
+            loss = tf.reduce_mean(tf.math.squared_difference(x_mb, model(x_mb, training=False))).numpy()
             test_loss.append(loss)
 
         test_loss = tf.reduce_mean(test_loss)
@@ -234,8 +366,8 @@ def main():
     args.expname = ''
     args.load = ''  # r'C:\Users\justjo\PycharmProjects\BNAF_tensorflow_eager\checkpoint\corn_layers1_h12_flows6_resize0.25_boxsize0.1_gated_2019-08-24-11-07-09'
     args.save = True
-    args.tensorboard = r'D:\pycharm_projects\GQC_images_tensorboard'
-    args.early_stopping = 500
+    args.tensorboard = r'D:\pycharm_projects\GQC_autoencoder'
+    args.early_stopping = 50
     args.regL2 = -1
     args.regL1 = -1
     args.manualSeed = None
@@ -246,7 +378,7 @@ def main():
     args.preserve_aspect_ratio = True;  ##when resizing
     args.rand_box_init = 0.25  ##relative size of random box from image
 
-    args.path = os.path.join(r'D:\pycharm_projects\GQC_images_tensorboard',
+    args.path = os.path.join(args.tensorboard,
                              '{}{}_layers{}_h{}_flows{}_resize{}_boxsize{}{}_{}'.format(
                                  args.expname + ('_' if args.expname != '' else ''),
                                  args.dataset, args.layers, args.hidden_dim, args.flows, args.img_size,
@@ -265,9 +397,9 @@ def main():
 
     # pathlib.Path(args.tensorboard).mkdir(parents=True, exist_ok=True)
 
-    print('Creating BNAF model..')
+    print('Creating model..')
     with tf.device(args.device):
-        model = create_model(args, verbose=True)
+        autoencoder, encoder = create_model(args)
 
     ## tensorboard and saving
     writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
@@ -284,7 +416,7 @@ def main():
     with tf.device(args.device):
         optimizer = tf.optimizers.Adam()
     root = tf.train.Checkpoint(optimizer=optimizer,
-                               model=model,
+                               model=autoencoder,
                                optimizer_step=tf.compat.v1.train.get_global_step())
 
     if args.load:
@@ -292,22 +424,32 @@ def main():
 
     print('Creating scheduler..')
     # use baseline to avoid saving early on
-    scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, root=root)
+    scheduler = EarlyStopping(model=autoencoder, patience=args.early_stopping, args=args, root=root)
 
     with tf.device(args.device):
-        train(model, optimizer, scheduler, data_loader_train, data_loader_valid, data_loader_test, data_loader_cont,
-              args)
+        train(autoencoder, optimizer, scheduler, data_loader_train, data_loader_valid, data_loader_test, args)
 
-    ## save??
-    scheduler.save_model()
-    if type(args.vh) is np.ndarray:
-        np.save(args.path + '/vh.npy', args.vh)
+###################### inference #################################
+    temp = [x for x in data_loader_train]
+    tempae = autoencoder(temp[0][0], training=False)
 
+    train_data = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
+    train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in train_data])/255.0
+    test_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
+    test_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in test_data])/255.0
+    all_data = np.concatenate((train_data, test_data))
 
-if __name__ == '__main__':
-    main()
+    rand_crops_imgs = []
+    rand_crops_embeds = []
+    for _ in range(10):
+        temp = [img_inference(x,args) for x in all_data]
+        rand_crops_imgs.extend(temp)
+        rand_crops_embeds.extend(encoder(np.stack(temp)))
+    rand_crops_imgs = np.stack(rand_crops_imgs)
+    rand_crops_embeds = np.stack(rand_crops_embeds)
 
-##"C:\Program Files\Git\bin\sh.exe" --login -i
+# if __name__ == '__main__':
+#     main()
 
-#### tensorboard --logdir=D:\pycharm_projects\GQC_images_tensorboard
+#### tensorboard --logdir=D:\pycharm_projects\GQC_autoencoder
 ## http://localhost:6006/
