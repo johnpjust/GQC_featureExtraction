@@ -33,7 +33,7 @@ def img_inference(x_in, args):
 def img_preprocessing(x_in, args):
     # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
     rand_crop, offset, size = random_crop(x_in, args.rand_box)
-    # rand_crop = tf.minimum(tf.nn.relu(rand_crop + tf.random.uniform(rand_crop.shape, -0.5, 0.5)), 255)/128.0 - 1  ## dequantize
+    # rand_crop = tf.clip_by_value(rand_crop + tf.random.uniform(rand_crop.shape, -0.5, 0.5), 0, 255)/128.0 - 1  ## dequantize
     # heat_map = xy_in[1][np.int(offset[0] * args.rand_box_ratio):(np.int(offset[0] * args.rand_box_ratio) + args.rand_box_hm_size),
     #            np.int(offset[1] * args.rand_box_ratio):(np.int(offset[1] * args.rand_box_ratio) + args.rand_box_hm_size)]
     return rand_crop, tf.squeeze(tf.matmul(tf.reshape(rand_crop, [1,-1]), args.vh))
@@ -112,7 +112,7 @@ def create_model(args):
     x = layers.GlobalAveragePooling2D()(x)
 
     x = layers.Flatten()(x)
-    x = layers.Dense(6, activation=actfun)(x)
+    x = layers.Dense(6, activation=tf.nn.elu)(x)
     quality = layers.Dense(1)(x)
     model = tf.keras.Model(inputs, quality, name='toy_resnet')
     model.summary()
@@ -122,12 +122,13 @@ def create_model(args):
 
 def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_loader_test, args, target_model):
     epoch = args.start_epoch
+    y_mb_scalar = tf.constant(1000, dtype=tf.float32)
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
         for x_mb, y_mb in data_loader_train:
             with tf.GradientTape(watch_accessed_variables=False) as tape:
                 tape.watch(model.trainable_variables)
-                loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb), model(x_mb, training=True)))
+                loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb)/y_mb_scalar, model(x_mb, training=True)))
             grads = tape.gradient(loss, model.trainable_variables)
             grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
             globalstep = optimizer.apply_gradients(zip(grads, model.trainable_variables))
@@ -138,14 +139,14 @@ def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_
 
         validation_loss = []
         for x_mb, y_mb in data_loader_val:
-            loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb), model(x_mb, training=False))).numpy()
+            loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb)/y_mb_scalar, model(x_mb, training=False))).numpy()
             validation_loss.append(loss)
         validation_loss = tf.reduce_mean(validation_loss)
         # print("validation loss:  " + str(validation_loss))
 
         test_loss=[]
         for x_mb, y_mb in data_loader_test:
-            loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb), model(x_mb, training=False))).numpy()
+            loss = tf.reduce_mean(tf.math.squared_difference(target_model.eval(y_mb)/y_mb_scalar, model(x_mb, training=False))).numpy()
             test_loss.append(loss)
         test_loss = tf.reduce_mean(test_loss)
 
@@ -161,121 +162,131 @@ def train(model, optimizer, scheduler, data_loader_train, data_loader_val, data_
         if stop:
             break
 
+def load_model(args, root):
+    print('Loading model..')
+    root.restore(tf.train.latest_checkpoint(args.load or args.path))
 
 class parser_:
     pass
 
 
-def main():
-    # config = tf.compat.v1.ConfigProto()
-    # config.gpu_options.allow_growth = True
-    # config.log_device_placement = True
-    # tf.compat.v1.enable_eager_execution(config=config)
+# config = tf.compat.v1.ConfigProto()
+# config.gpu_options.allow_growth = True
+# config.log_device_placement = True
+# tf.compat.v1.enable_eager_execution(config=config)
 
-    # tf.config.experimental_run_functions_eagerly(True)
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        try:
-            tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
-            # Currently, memory growth needs to be the same across GPUs
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-            print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-        except RuntimeError as e:
-            # Memory growth must be set before GPUs have been initialized
-            print(e)
+# tf.config.experimental_run_functions_eagerly(True)
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        # Currently, memory growth needs to be the same across GPUs
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+    except RuntimeError as e:
+        # Memory growth must be set before GPUs have been initialized
+        print(e)
 
-    args = parser_()
-    args.device = '/gpu:0'  # '/gpu:0'
-    args.dataset = 'corn'  # 'gq_ms_wheat_johnson'#'gq_ms_wheat_johnson' #['gas', 'bsds300', 'hepmass', 'miniboone', 'power']
-    args.batch_dim = 500
-    args.clip_norm = 0.1
-    args.epochs = 5000
-    args.patience = 10
-    args.load = ''  # r'C:\Users\justjo\PycharmProjects\BNAF_tensorflow_eager\checkpoint\corn_layers1_h12_flows6_resize0.25_boxsize0.1_gated_2019-08-24-11-07-09'
-    args.save = True
-    args.tensorboard = r'D:\pycharm_projects\GQC_self_supervised'
-    args.early_stopping = 50
-    args.manualSeed = None
-    args.manualSeedw = None
-    args.prefetch_size = 1  # data pipeline prefetch buffer size
-    args.parallel = 8  # data pipeline parallel processes
-    args.img_size = 0.25;  ## resize img between 0 and 1 <-- must match target model
-    args.preserve_aspect_ratio = True;  ##when resizing
-    args.rand_box_init = 0.25  ##relative size of random box from image <-- must match target model
-    args.target_model_path = r'D:\pycharm_projects\GQC_images_tensorboard\MAF_layers5_h[100]_vhTrue_resize0.25_boxsize0.25_2019-12-27-15-11-42'
+args = parser_()
+args.device = '/gpu:0'  # '/gpu:0'
+args.dataset = 'corn'  # 'gq_ms_wheat_johnson'#'gq_ms_wheat_johnson' #['gas', 'bsds300', 'hepmass', 'miniboone', 'power']
+args.batch_dim = 500
+args.clip_norm = 0.1
+args.epochs = 5000
+args.patience = 10
+args.load = r'D:\pycharm_projects\GQC_self_supervised\boxsize0.250.25_2019-12-29-02-05-01'
+args.save = True
+args.tensorboard = r'D:\pycharm_projects\GQC_self_supervised'
+args.early_stopping = 50
+args.manualSeed = None
+args.manualSeedw = None
+args.prefetch_size = 1  # data pipeline prefetch buffer size
+args.parallel = 8  # data pipeline parallel processes
+args.img_size = 0.25;  ## resize img between 0 and 1 <-- must match target model
+args.preserve_aspect_ratio = True;  ##when resizing
+args.rand_box_init = 0.25  ##relative size of random box from image <-- must match target model
+args.target_model_path = r'D:\pycharm_projects\GQC_images_tensorboard\MAF_layers5_h[100]_vhTrue_resize0.25_boxsize0.25_2019-12-28-14-55-44'
 
-    args.path = os.path.join(args.tensorboard,
-                             'boxsize{}{}_{}'.format(args.img_size,args.rand_box_init,
-                                 str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
+args.path = os.path.join(args.tensorboard,
+                         'boxsize{}{}_{}'.format(args.img_size,args.rand_box_init,
+                             str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
 
-    print("loading training/target model")
-    with tf.device(args.device):
-        target_model = load_target_model(args.target_model_path)
-    args.vh = np.load(os.path.join(args.target_model_path, 'vh.npy'))
+print("loading training/target model")
+with tf.device(args.device):
+    target_model = load_target_model(args.target_model_path)
+args.vh = np.load(os.path.join(args.target_model_path, 'vh.npy'))
 
-    print('Loading dataset..')
-    data_loader_train, data_loader_valid, data_loader_test = load_dataset(args)
+print('Loading dataset..')
+data_loader_train, data_loader_valid, data_loader_test = load_dataset(args)
 
-    if args.save and not args.load:
-        print('Creating directory experiment..')
-        pathlib.Path(args.path).mkdir(parents=True, exist_ok=True)
-        with open(os.path.join(args.path, 'args.json'), 'w') as f:
-            json.dump(str(args.__dict__), f, indent=4, sort_keys=True)
+if args.save and not args.load:
+    print('Creating directory experiment..')
+    pathlib.Path(args.path).mkdir(parents=True, exist_ok=True)
+    with open(os.path.join(args.path, 'args.json'), 'w') as f:
+        json.dump(str(args.__dict__), f, indent=4, sort_keys=True)
 
-    # pathlib.Path(args.tensorboard).mkdir(parents=True, exist_ok=True)
+# pathlib.Path(args.tensorboard).mkdir(parents=True, exist_ok=True)
 
-    print('Creating model..')
-    with tf.device(args.device):
-        model = create_model(args)
+print('Creating model..')
+with tf.device(args.device):
+    model = create_model(args)
 
-    ## tensorboard and saving
-    writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
-    writer.set_as_default()
-    tf.compat.v1.train.get_or_create_global_step()
+## tensorboard and saving
+writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
+writer.set_as_default()
+tf.compat.v1.train.get_or_create_global_step()
 
-    global_step = tf.compat.v1.train.get_global_step()
-    global_step.assign(0)
+global_step = tf.compat.v1.train.get_global_step()
+global_step.assign(0)
 
-    root = None
-    args.start_epoch = 0
+root = None
+args.start_epoch = 0
 
-    print('Creating optimizer..')
-    with tf.device(args.device):
-        optimizer = tf.optimizers.Adam()
-    root = tf.train.Checkpoint(optimizer=optimizer,
-                               model=model,
-                               optimizer_step=tf.compat.v1.train.get_global_step())
+print('Creating optimizer..')
+with tf.device(args.device):
+    optimizer = tf.optimizers.Adam()
+root = tf.train.Checkpoint(optimizer=optimizer,
+                           model=model,
+                           optimizer_step=tf.compat.v1.train.get_global_step())
 
-    print('Creating scheduler..')
-    # use baseline to avoid saving early on
-    scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, root=root)
+if args.load:
+    load_model(args, root)
 
-    with tf.device(args.device):
-        train(model, optimizer, scheduler, data_loader_train, data_loader_valid, data_loader_test, args, target_model)
+print('Creating scheduler..')
+# use baseline to avoid saving early on
+scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, root=root)
+
+with tf.device(args.device):
+    train(model, optimizer, scheduler, data_loader_train, data_loader_valid, data_loader_test, args, target_model)
 
 # ###################### inference #################################
-#     temp = [x for x in data_loader_train]
-#     tempae = model(temp[0][0], training=False)
-#
-#     train_data = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
-#     train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in train_data])/128.0 - 1
-#     test_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
-#     test_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in test_data])/128.0 - 1
-#     all_data = np.concatenate((train_data, test_data))
-#
-#     rand_crops_imgs = []
-#     rand_crops_embeds = []
-#     for _ in range(10):
-#         temp = [img_inference(x,args) for x in all_data]
-#         rand_crops_imgs.extend(temp)
-#         rand_crops_embeds.extend(model(np.stack(temp)))
-#     rand_crops_imgs = np.stack(rand_crops_imgs)
-#     rand_crops_embeds = np.stack(rand_crops_embeds)
+    embeds = tf.keras.Model(model.input, model.layers[-2].output, name='embeds')
+
+    # train_data = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
+    # train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in train_data])/128.0 - 1
+    # test_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
+    # test_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in test_data])/128.0 - 1
+    # all_data = np.concatenate((train_data, test_data))
+
+    rand_crops_imgs = []
+    rand_crops_embeds = []
+    for _ in range(10):
+        temp = [x for x in data_loader_train]
+        rand_crops_imgs.extend(temp[0][0].numpy())
+        rand_crops_embeds.extend(embeds(temp[0][0]))
+
+    for _ in range(10):
+        temp = [x for x in data_loader_test]
+        rand_crops_imgs.extend(temp[0][0].numpy())
+        rand_crops_embeds.extend(embeds(temp[0][0]))
+
+    rand_crops_imgs = np.stack(rand_crops_imgs)
+    rand_crops_embeds = np.stack(rand_crops_embeds)
 
 # if __name__ == '__main__':
 #     main()
 
-#### tensorboard --logdir=D:\pycharm_projects\GQC_autoencoder
+#### tensorboard --logdir=D:\pycharm_projects\GQC_self_supervised
 ## http://localhost:6006/

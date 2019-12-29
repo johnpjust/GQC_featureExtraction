@@ -9,7 +9,7 @@ from munch import munchify
 tf.random.set_seed(None)
 
 def load_target_model(path, act_fun = tf.nn.relu):
-    # path = r'D:\pycharm_projects\GQC_images_tensorboard\MAF_layers5_h[100]_vhTrue_resize0.25_boxsize0.25_2019-12-27-15-11-42'
+    # path = r'D:\pycharm_projects\GQC_images_tensorboard\MAF_layers5_h[100]_vhTrue_resize0.25_boxsize0.25_2019-12-28-14-55-44'
     ## set all "args" with json file data
     data = []
 
@@ -31,8 +31,33 @@ def load_target_model(path, act_fun = tf.nn.relu):
     model = mafs.MaskedAutoregressiveFlow(args.n_dims, args.num_hidden, args.act, args.num_layers, batch_norm=True, args=args)
 
     model_parms = np.load(os.path.join(path,'model_parms.npy'), allow_pickle=True)
+    model_meanvars = np.load(os.path.join(path, 'model_bns_meanvars.npy'), allow_pickle=True)
+    model_mades_input_order = np.load(os.path.join(path, 'model_mades_input_orders.npy'), allow_pickle=True)
+    model_masks = np.load(os.path.join(path, 'model_mades_masks.npy'), allow_pickle=True)
 
+    ## set model parameters
     for m, n in zip(model.parms, model_parms):
         m.assign(n)
+
+    # ## set non-trainable batch norm parameters
+    # for m, n in zip(model.meanvars, model_meanvars):
+    #     m.assign(n)
+
+    ## set batch norm parameters
+    new_model_meanvars = []
+    for bn in model.bns:
+        new_model_meanvars += [bn.mean, bn.variance]
+    bn_meanvars = mafs.flatten(new_model_meanvars)
+    for m, n in zip(new_model_meanvars, model_meanvars):
+        m.assign(n)
+
+    ## set layer perutations
+    for made, input_order in zip(model.mades, model_mades_input_order):
+        made.input_order = input_order
+
+    ## set layer masks
+    for m, n in zip(model.mades, model_masks):
+        m.Ms = n[0]
+        m.Mmp = n[1]
 
     return model
